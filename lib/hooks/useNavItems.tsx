@@ -193,6 +193,12 @@ export default function useNavItems(): ReturnType {
           icon: 'token' as const,
           isActive: pathname === '/account-balance-checker',
         },
+        {
+          text: 'Token Supply Checker',
+          nextRoute: { pathname: '/token-supply-checker' as const },
+          icon: 'token-transfers' as const,
+          isActive: pathname === '/token-supply-checker',
+        },
         verifiedContracts,
         ensLookup,
         config.features.beaconChain.isEnabled && {
