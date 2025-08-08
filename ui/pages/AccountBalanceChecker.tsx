@@ -25,7 +25,7 @@ const AccountBalanceChecker = () => {
 
   return (
     <>
-      <PageTitle title="Balance Checker (ETH)"/>
+      <PageTitle title="Balance Checker (RWA)"/>
       { content }
     </>
   );

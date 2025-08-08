@@ -1,8 +1,8 @@
-import { Button, Grid, Text, chakra, HStack, Box, VStack, Divider } from '@chakra-ui/react';
+import { Button, Grid, Text, chakra, HStack, Box, VStack, Divider, Radio, RadioGroup, Stack } from '@chakra-ui/react';
 import React from 'react';
 import type { SubmitHandler } from 'react-hook-form';
 import { useForm, FormProvider } from 'react-hook-form';
-import { parseAbi } from 'viem';
+import { parseAbi, type PublicClient } from 'viem';
 import { usePublicClient } from 'wagmi';
 
 import type { FormFieldsBalanceChecker } from 'ui/contractVerification/types';
@@ -28,7 +28,42 @@ interface BalanceResult {
   decimals: number;
   formattedBalance: string;
   blockNumber: string;
+  message?: string;
 }
+
+// Utility function to check if contract exists at specific block
+const isContractDeployedAtBlock = async(
+  contractAddress: `0x${ string }`,
+  blockNumber: bigint,
+  publicClient: PublicClient,
+) => {
+  try {
+    const code = await publicClient.getBytecode({
+      address: contractAddress,
+      blockNumber,
+    });
+    return code && code !== '0x';
+  } catch {
+    return false;
+  }
+};
+
+// Binary search to find block number from timestamp
+const findBlockByTimestamp = async(targetTimestamp: number, publicClient: PublicClient) => {
+  let low = BigInt(0);
+  let high = await publicClient.getBlockNumber();
+  const targetTimestampBigInt = BigInt(targetTimestamp);
+
+  while (low <= high) {
+    const mid = (low + high) / BigInt(2);
+    const block = await publicClient.getBlock({ blockNumber: mid });
+
+    if (block.timestamp === targetTimestampBigInt) return mid;
+    if (block.timestamp < targetTimestampBigInt) low = mid + BigInt(1);
+    else high = mid - BigInt(1);
+  }
+  return low; // Return closest block
+};
 
 const AccountBalanceCheckerForm = () => {
   const formApi = useForm<FormFieldsBalanceChecker>({
@@ -39,13 +74,14 @@ const AccountBalanceCheckerForm = () => {
       license_type: null,
       cryptocurrency: { label: 'RWA', value: 'RWA' },
       account_address: '',
-      filter_type: 'block',
+      filter_type: 'date',
+      date_snapshot: '',
       block_number: '',
       erc20_address: '',
     },
   });
 
-  const { handleSubmit, watch, formState, setError, reset, clearErrors } = formApi;
+  const { handleSubmit, watch, formState, setError, reset, clearErrors, setValue } = formApi;
   const toast = useToast();
   const publicClient = usePublicClient();
 
@@ -66,7 +102,12 @@ const AccountBalanceCheckerForm = () => {
       return;
     }
 
-    if (!data.block_number) {
+    if (data.filter_type === 'date' && !data.date_snapshot) {
+      setError('date_snapshot', { message: 'Please select a date' });
+      return;
+    }
+
+    if (data.filter_type === 'block' && !data.block_number) {
       setError('block_number', { message: 'Please enter a block number' });
       return;
     }
@@ -94,7 +135,16 @@ const AccountBalanceCheckerForm = () => {
     try {
       const accountAddress = data.account_address as `0x${ string }`;
       const selectedCrypto = data.cryptocurrency.value;
-      const blockNumber = BigInt(data.block_number);
+
+      let blockNumber: bigint;
+
+      // Convert timestamp to block number if using date filter
+      if (data.filter_type === 'date') {
+        const timestamp = Math.floor(new Date(data.date_snapshot).getTime() / 1000);
+        blockNumber = await findBlockByTimestamp(timestamp, publicClient);
+      } else {
+        blockNumber = BigInt(data.block_number);
+      }
 
       // Handle native ETH vs ERC20 tokens
       if (selectedCrypto === 'RWA') {
@@ -111,11 +161,37 @@ const AccountBalanceCheckerForm = () => {
           balance: balance.toString(),
           decimals: 18,
           formattedBalance: (Number(balance) / 10 ** 18).toFixed(6),
-          blockNumber: data.block_number,
+          blockNumber: blockNumber.toString(),
         });
       } else if (selectedCrypto === 'ERC20') {
         // For ERC20 tokens
         const tokenAddress = data.erc20_address as `0x${ string }`;
+
+        // Check if contract exists at this block
+        const isDeployed = await isContractDeployedAtBlock(tokenAddress, blockNumber, publicClient);
+
+        if (!isDeployed) {
+          setBalanceResult({
+            tokenAddress: data.erc20_address,
+            tokenSymbol: 'Unknown',
+            tokenName: 'Unknown',
+            balance: '0',
+            decimals: 18,
+            formattedBalance: '0.000000',
+            blockNumber: blockNumber.toString(),
+            message: 'Token not deployed at this block number',
+          });
+
+          toast({
+            position: 'top-right',
+            title: 'Token Not Deployed',
+            description: `The token was not deployed at block ${ blockNumber.toString() }. Balance is 0.`,
+            status: 'info',
+            variant: 'subtle',
+            isClosable: true,
+          });
+          return;
+        }
 
         // Get token info
         const [ balance, decimals, symbol, name ] = await Promise.all([
@@ -153,7 +229,7 @@ const AccountBalanceCheckerForm = () => {
           balance: balance.toString(),
           decimals: Number(decimals),
           formattedBalance: (Number(balance) / 10 ** Number(decimals)).toFixed(6),
-          blockNumber: data.block_number,
+          blockNumber: blockNumber.toString(),
         });
       }
 
@@ -189,6 +265,20 @@ const AccountBalanceCheckerForm = () => {
   }, [ reset ]);
 
   const selectedCrypto = watch('cryptocurrency');
+  const filterType = watch('filter_type');
+
+  // Update form when filter type changes
+  React.useEffect(() => {
+    if (filterType === 'date') {
+      setValue('block_number', '');
+    } else {
+      setValue('date_snapshot', '');
+    }
+  }, [ filterType, setValue ]);
+
+  const handleFilterTypeChange = React.useCallback((value: 'date' | 'block') => {
+    setValue('filter_type', value);
+  }, [ setValue ]);
 
   return (
     <FormProvider { ...formApi }>
@@ -240,22 +330,58 @@ const AccountBalanceCheckerForm = () => {
             />
 
             <span>
-              Enter the account or contract address for which you want to check the historical balance.
+              Enter the account address for which you want to check the historical balance.
             </span>
           </ContractVerificationFormRow>
 
           <ContractVerificationFormRow>
-            <FormFieldText<FormFieldsBalanceChecker, 'block_number'>
-              name="block_number"
-              isRequired
-              placeholder="Enter block number"
-              type="number"
-            />
+            <Box>
+              <Text mb={ 3 } fontWeight="medium">Filter by:</Text>
+              <RadioGroup
+                value={ filterType }
+                onChange={ handleFilterTypeChange }
+              >
+                <Stack direction="row" spacing={ 6 }>
+                  <Radio value="date">Date</Radio>
+                  <Radio value="block">Block Number</Radio>
+                </Stack>
+              </RadioGroup>
+            </Box>
 
             <span>
-              Enter the specific block number for the balance snapshot.
+              Choose whether to filter the balance lookup by a specific date or block number.
             </span>
           </ContractVerificationFormRow>
+
+          { filterType === 'date' && (
+            <ContractVerificationFormRow>
+              <FormFieldText<FormFieldsBalanceChecker, 'date_snapshot'>
+                name="date_snapshot"
+                isRequired
+                placeholder="MM/DD/YYYY"
+                type="date"
+              />
+
+              <span>
+                Select the date for the balance snapshot.
+              </span>
+            </ContractVerificationFormRow>
+          ) }
+
+          { filterType === 'block' && (
+            <ContractVerificationFormRow>
+              <FormFieldText<FormFieldsBalanceChecker, 'block_number'>
+                name="block_number"
+                isRequired
+                placeholder="Enter block number"
+                type="number"
+              />
+
+              <span>
+                Enter the specific block number for the balance snapshot.
+              </span>
+            </ContractVerificationFormRow>
+          ) }
 
           { /* Display form validation errors */ }
           { formState.errors.root?.message && (
@@ -294,6 +420,13 @@ const AccountBalanceCheckerForm = () => {
           <VStack spacing={ 4 } mt={ 8 } p={ 6 } borderRadius="md" align="stretch">
             <Text fontSize="lg" fontWeight="bold">Balance Result</Text>
             <Divider/>
+            { balanceResult.message && (
+              <Box p={ 3 } bg="blue.50" borderRadius="md" border="1px solid" borderColor="blue.200">
+                <Text color="blue.800" fontSize="sm" fontWeight="medium">
+                  { balanceResult.message }
+                </Text>
+              </Box>
+            ) }
             <Grid templateColumns="1fr 1fr" gap={ 4 }>
               <Box>
                 <Text fontWeight="medium" color="gray.600">Token:</Text>

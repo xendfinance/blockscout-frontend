@@ -7,13 +7,14 @@
 declare module "nextjs-routes" {
   export type Route =
     | StaticRoute<"/404">
+    | StaticRoute<"/account-balance-checker">
+    | StaticRoute<"/token-supply-checker">
     | StaticRoute<"/account/api-key">
     | StaticRoute<"/account/custom-abi">
     | StaticRoute<"/account/rewards">
     | StaticRoute<"/account/tag-address">
     | StaticRoute<"/account/verified-addresses">
     | StaticRoute<"/account/watchlist">
-    | StaticRoute<"/account-balance-checker">
     | StaticRoute<"/accounts">
     | DynamicRoute<"/accounts/label/[slug]", { "slug": string }>
     | StaticRoute<"/add-delegation">
